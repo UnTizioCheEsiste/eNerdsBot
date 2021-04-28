@@ -1,17 +1,21 @@
 import discord
-from discord.utils import get
 import random
-from discord.ext import commands
 from keep_alive import keep_alive
-from discord.ext.commands import MissingPermissions
+from discord.ext import commands
+import aiofiles
 import os
 
+
+intents = discord.Intents.default()
+intents.members = True
 # Bot prefix
 client = commands.Bot(command_prefix = 'e-')
 # Add/remove role
 ROLE = "🔒 | Prigioniero"
 # Tonor API key
 TONOR = os.getenv("TONORKEY")
+# warnings
+client.warnings = {} # guild_id : {member_id: [count, [(admin_id, reason)]]}
 
 
 '''
@@ -20,6 +24,27 @@ Important commands
 # on ready
 @client.event
 async def on_ready():
+  for guild in client.guilds:
+        client.warnings[guild.id] = {}
+        
+        async with aiofiles.open(f"warn/{guild.id}.data", mode="a") as temp:
+            pass
+
+        async with aiofiles.open(f"warn/{guild.id}.data", mode="r") as file:
+            lines = await file.readlines()
+
+            for line in lines:
+                data = line.split(" ")
+                member_id = int(data[0])
+                admin_id = int(data[1])
+                reason = " ".join(data[2:]).strip("\n")
+
+                try:
+                    client.warnings[guild.id][member_id][0] += 1
+                    client.warnings[guild.id][member_id][1].append((admin_id, reason))
+
+                except KeyError:
+                    client.warnings[guild.id][member_id] = [1, [(admin_id, reason)]]
   await client.change_presence(status=discord.Status.online, activity=discord.Game("Hi there👋"))
   # online output
   print("Logged in as {0.user}".format(client))
@@ -54,6 +79,10 @@ for filename in os.listdir('./cogs'):
 async def on_command_error(ctx, error):
     pass
 
+# set 0 warn
+@client.event
+async def on_guild_join(guild):
+    client.warnings[guild.id] = {}
 '''
 Miscellaneous commands
 '''
@@ -123,6 +152,25 @@ async def help(ctx):
 '''
 Moderation commands
 '''
+# banned
+@client.command(description="Gets a list of all users banned from the channel.", help="\n**REQUIRES BAN MEMEBERS PERMISSIONS**.")
+@commands.has_permissions(ban_members=True)
+async def banlist(ctx):
+    banList = await ctx.guild.bans()
+    banString = ""
+    count = 0
+
+    if len(banList) > 0:
+        for ban in banList:
+            user = ban.user
+            reason = ban.reason
+
+            count += 1
+            banString += f"[{count}: {user.name} | #{user.discriminator} | {user.id} |  {reason}]\n"
+
+        await ctx.send(f"```css\nSERVER BANS (NUMBER, USERNAME, USER DISCRIMINATOR, USER ID, BAN REASON):\n\n{banString}\n```")
+    else:
+        await ctx.send("There are no users currently banned from this server")
 
 # kick
 @client.command(name='kick')
@@ -136,6 +184,7 @@ async def kick(ctx, member : discord.Member, *, reason=None):
 @commands.has_permissions(manage_guild=True)
 async def ban(ctx, member : discord.Member, *, reason=None):
   try:
+    ctx.message.delete()
     await member.ban(reason=reason)
     await ctx.send(f"{member.mention} banned as you wished.")
   except:
@@ -147,6 +196,7 @@ async def ban(ctx, member : discord.Member, *, reason=None):
 @commands.has_permissions(manage_guild=True)
 async def unban(ctx, *, member):
   try:
+    ctx.message.delete()
     banned_users = await ctx.guild.bans()
     member_name, member_discriminator = member.split("#")
     for ban_entry in banned_users:
@@ -216,6 +266,65 @@ async def provvedimenti(ctx, data,  *, announce):
   await ctx.message.delete()
   await ctx.send(embed=embed)
   print(f"sent provv to {ctx.message.channel} by {ctx.author}")
+
+# warn
+@client.command(name="warn", alias=["w"])
+@commands.has_permissions(kick_members=True)
+async def warn(ctx, member: discord.Member=None, *, reason=None):
+  ctx.message.delete()
+  if member is None:
+      return await ctx.send("The provided member could not be found or you forgot to provide one.")
+        
+  if reason is None:
+      return await ctx.send("Please provide a reason for warning this user.")
+
+  try:
+      first_warning = False
+      client.warnings[ctx.guild.id][member.id][0] += 1
+      client.warnings[ctx.guild.id][member.id][1].append((ctx.author.id, reason))
+
+  except KeyError:
+      first_warning = True
+      client.warnings[ctx.guild.id][member.id] = [1, [(ctx.author.id, reason)]]
+
+  count = client.warnings[ctx.guild.id][member.id][0]
+
+  async with aiofiles.open(f"warn/{ctx.guild.id}.data", mode="a") as file:
+      await file.write(f"{member.id} {ctx.author.id} {reason}\n")
+
+  await ctx.send(f"{member.mention} has {count} {'warning' if first_warning else 'warnings'}.")
+
+# warn clear
+@client.command()
+@commands.has_permissions(kick_members=True)
+async def warnclear(ctx, member: discord.Member):
+  ctx.message.delete()
+  if member is None:
+    return await ctx.send("The provided member could not be found or you forgot to provide one.")
+  embed = discord.Embed(title="Warn clear", description="", color=discord.Color.red())
+  client.warnings[ctx.guild.id][member.id][0] = 0
+  embed.add_field(name=f"{member.name}", value=f"warns have been deleted")
+  await ctx.send(embed=embed)
+
+# warned user info
+@client.command(name="warnings", alias=["winfo", "wi"])
+@commands.has_permissions(kick_members=True)
+async def warnings(ctx, member: discord.Member=None):
+  ctx.message.delete()
+  if member is None:
+      return await ctx.send("The provided member could not be found or you forgot to provide one.")
+    
+  embed = discord.Embed(title=f"Displaying Warnings for {member.name}", description="", colour=discord.Colour.red())
+  try:
+      i = 1
+      for reason in client.warnings[ctx.guild.id][member.id][1]:
+          embed.description += f"**Warning {i}** per: *'{reason}'*.\n"
+          i += 1
+
+      await ctx.send(embed=embed)
+
+  except KeyError: # no warnings
+      await ctx.send("This user has no warnings.")
 
 '''
 Fun
@@ -338,4 +447,4 @@ async def on_command_error(ctx, error):
 client.run(os.getenv("TOKEN"))
 
 # Discord.py Bot@2021 UnTizioCheEsiste, PhaseLocked
-# GNU GPLv3 License©
+# GNU GPLv3 License
